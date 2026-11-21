@@ -10,7 +10,7 @@ must be provided by the user. The app does not invent boot code.
 # Support #
 # Update Python # py -m pip install --upgrade pip
 # Install Components # py -m pip install --upgrade PySide6 pycdlib pyinstaller
-# Compile # py -m PyInstaller --noconfirm --clean --onefile --windowed --name "ISO Workshop" --icon "ISOWorkshop.ICO" --collect-all pycdlib "ISO Workshop.py"
+# Compile # py -m PyInstaller --noconfirm --clean --onefile --windowed --name "ISO Workshop" --icon "ISOWorkshop.ico" --add-data "ISOWorkshop.ico;." --collect-all pycdlib "ISO Workshop.py"
 
 from __future__ import annotations
 
@@ -28,11 +28,11 @@ import uuid
 from collections import defaultdict
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt, QThread, QUrl, Signal, QSize, QFileInfo, QTimer
+from PySide6.QtCore import QPoint, Qt, QThread, QUrl, Signal, QSize, QTimer
 from PySide6.QtGui import QDesktopServices, QFont, QIcon
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFileDialog, QFileIconProvider,
-    QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QStyle,
+    QApplication, QCheckBox, QComboBox, QFileDialog,
+    QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QProgressBar, QPushButton, QSizePolicy, QStackedWidget,
     QVBoxLayout, QWidget
 )
@@ -50,7 +50,7 @@ if os.name == "nt":
         hwnd = ctypes.windll.kernel32.GetConsoleWindow()
         if hwnd:
             ctypes.windll.user32.ShowWindow(hwnd, 0)
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ISOWorkshop.NativeISO")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ISOWorkshop.CustomIcon")
     except (AttributeError, OSError):
         pass
 
@@ -803,8 +803,10 @@ class ISOApp(QMainWindow):
         self.last_unpack_directory: Path | None = None
         self.info_popup: QFrame | None = None
         self.info_dependencies: dict[str, QPushButton] = {}
-        self.native_icon = self._get_windows_iso_icon()
-        self.setWindowIcon(self.native_icon)
+        self.app_icon = self._load_app_icon()
+        # Application-level icon also covers dialogs and the Windows taskbar.
+        QApplication.instance().setWindowIcon(self.app_icon)
+        self.setWindowIcon(self.app_icon)
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -812,7 +814,7 @@ class ISOApp(QMainWindow):
         vertical.setContentsMargins(0, 0, 0, 0)
         vertical.setSpacing(0)
 
-        self.titlebar = TitleBar(self, self.native_icon)
+        self.titlebar = TitleBar(self, self.app_icon)
         vertical.addWidget(self.titlebar)
         self.stack = CompactStack()
         # Do not let the hidden pages determine the active page's dimensions.
@@ -827,16 +829,22 @@ class ISOApp(QMainWindow):
         self.show_home()
 
     @staticmethod
-    def _get_windows_iso_icon() -> QIcon:
-        """Use the native Windows Shell icon associated with ISO files."""
-        # Use the shell icon instead of drawing or packaging a custom icon.
-        if sys.platform == "win32":
-            provider = QFileIconProvider()
-            file_info = QFileInfo(str(Path.home() / "_isoworkshop_windows_icon_.iso"))
-            icon = provider.icon(file_info)
-            if not icon.isNull():
-                return icon
-        return QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DriveCDIcon)
+    def _load_app_icon() -> QIcon:
+        """Load the user's ICO for source runs and bundled PyInstaller builds."""
+        # PyInstaller --onefile extracts --add-data resources to sys._MEIPASS.
+        # For normal Python runs, keep ISOWorkshop.ico beside this script.
+        base_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+        icon_path = base_dir / "ISOWorkshop.ico"
+        if not icon_path.is_file():
+            raise FileNotFoundError(
+                f"Application icon not found: {icon_path}. "
+                "Place ISOWorkshop.ico next to ISO Workshop.py, or bundle it "
+                'with PyInstaller using --add-data "ISOWorkshop.ico;.".'
+            )
+        icon = QIcon(str(icon_path))
+        if icon.isNull():
+            raise RuntimeError(f"Could not load application icon: {icon_path}")
+        return icon
 
     @staticmethod
     def _page() -> tuple[QWidget, QVBoxLayout]:
@@ -901,8 +909,8 @@ class ISOApp(QMainWindow):
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
         # Icon, title and chevron share one compact line.
-        pack = self._action_button("Pack ISO  ›", self.native_icon)
-        unpack = self._action_button("Unpack ISO  ›", self.native_icon)
+        pack = self._action_button("Pack ISO  ›", self.app_icon)
+        unpack = self._action_button("Unpack ISO  ›", self.app_icon)
         pack.clicked.connect(self.show_pack)
         unpack.clicked.connect(self.show_unpack)
         buttons.addWidget(pack, 1)
