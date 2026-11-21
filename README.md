@@ -4,6 +4,8 @@ A compact, dark-themed Windows ISO utility built with Python and PySide6.
 
 Repository: [https://github.com/EgeGurkan/ISOWorkshop](https://github.com/EgeGurkan/ISOWorkshop)
 
+<img width="380" height="132" alt="1" src="https://github.com/user-attachments/assets/21c99d89-d286-4887-ba79-8d857205dffd" />
+
 ## Requirements
 
 - Windows OS with Python and dependencies
@@ -40,11 +42,15 @@ Select a source folder and an output `.iso` file. The **Label** field controls t
 | Label | Up to 32 characters: A-Z, 0-9, spaces, underscores |
 | Create GZip copy | Optional and **off by default** |
 
+<img width="380" height="509" alt="2" src="https://github.com/user-attachments/assets/da31646c-cad9-4c3d-ae56-0f32e84388af" />
+
 When ISO 9660 or ISO 9660 + Joliet is selected, the application checks the source tree. If a path reaches seven nested directory levels, the selection changes to the recommended **UDF 2.60 + Joliet**. This check happens when choosing or editing Source, when changing File System, and immediately before packing.
 
 ISO 9660 compatibility has a path-component limit in the underlying ISO writer. For UDF and hybrid modes, the original deeper paths are retained in their extended directory namespaces while paths beyond the ISO 9660 compatibility limit are not added to the legacy namespace. Older ISO 9660-only readers may not see those deeper entries.
 
 The **Boot ISO image** option requires a suitable boot-image file and BIOS/UEFI selection. An arbitrary boot image does not guarantee that the final ISO will boot on every computer.
+
+<img width="380" height="573" alt="3" src="https://github.com/user-attachments/assets/4a9645d3-f032-4fbb-a3df-f04d0415b9fd" />
 
 If **Create GZip copy (.iso.gz)** is selected, the app produces a second, compressed file alongside the ordinary `.iso`. It does **not** compress the ISO file itself.
 
@@ -63,6 +69,8 @@ The app attempts extraction using `pycdlib` first. If the ISO cannot be opened, 
 Fallback extraction is performed in a staging directory, with checks against unsafe paths, symlinks, and special files before files are copied into the destination. ISO images from untrusted sources should still be treated cautiously.
 
 After a successful extraction, **Open Folder** opens the extracted directory.
+
+<img width="380" height="336" alt="4" src="https://github.com/user-attachments/assets/e325a6f6-33e1-4bc6-842a-be426b673b00" />
 
 ## Status and error behavior
 
