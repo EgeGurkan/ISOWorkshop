@@ -10,7 +10,10 @@ must be provided by the user. The app does not invent boot code.
 # Support #
 # Update Python # py -m pip install --upgrade pip
 # Install Components # py -m pip install --upgrade PySide6 pycdlib pyinstaller
-# Compile # py -m PyInstaller --noconfirm --clean --onefile --windowed --name "ISO Workshop" --icon "ISOWorkshop.ico" --add-data "ISOWorkshop.ico;." --collect-all pycdlib "ISO Workshop.py"
+# Optional: export Windows ISO icon ONCE for PyInstaller's executable icon:
+# py "ISO Workshop.py" --export-icon "ISOWorkshop-build.ico"
+# Compile: py -m PyInstaller --noconfirm --clean --onefile --windowed --name "ISO Workshop" --icon "ISOWorkshop.ico" --collect-all pycdlib "ISO Workshop.py"
+# The build-only ICO can be deleted after compiling; the script and EXE do not need it at runtime.
 
 from __future__ import annotations
 
@@ -18,6 +21,7 @@ import gzip
 import ctypes
 import os
 import re
+import struct
 import shutil
 import stat
 import subprocess
@@ -28,13 +32,16 @@ import uuid
 from collections import defaultdict
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt, QThread, QUrl, Signal, QSize, QTimer
-from PySide6.QtGui import QDesktopServices, QFont, QIcon
+from PySide6.QtCore import QPoint, QPointF, Qt, QThread, QUrl, Signal, QSize, QTimer
+from PySide6.QtGui import (
+    QColor, QDesktopServices, QFont, QIcon, QPainter, QPainterPath, QPen,
+    QPixmap, QRadialGradient,
+)
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog,
     QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QProgressBar, QPushButton, QSizePolicy, QStackedWidget,
-    QVBoxLayout, QWidget
+    QVBoxLayout, QWidget, QStyle
 )
 
 try:
@@ -605,6 +612,162 @@ def _unpack_iso(iso_file: str, progress) -> list[Path]:
             pass
 
 
+# ---------------------- WINDOWS ISO ICON -----------------------------
+
+
+def _extract_windows_iso_icon() -> bytes | None:
+    """Read Windows' native ISO-file icon (RT_GROUP_ICON 5205) into ICO bytes.
+
+    No companion icon file, third-party Windows package or temporary file is
+    needed. Windows 10/11 may keep icon resources in imageres.dll.mun instead
+    of the lightweight imageres.dll stub, so both locations are checked.
+    """
+    if os.name != "nt":
+        return None
+
+    from ctypes import wintypes
+
+    api = ctypes.WinDLL("kernel32", use_last_error=True)
+    api.LoadLibraryExW.argtypes = (wintypes.LPCWSTR, wintypes.HANDLE, wintypes.DWORD)
+    api.LoadLibraryExW.restype = wintypes.HMODULE
+    api.FindResourceW.argtypes = (wintypes.HMODULE, ctypes.c_void_p, ctypes.c_void_p)
+    api.FindResourceW.restype = wintypes.HRSRC
+    api.SizeofResource.argtypes = (wintypes.HMODULE, wintypes.HRSRC)
+    api.SizeofResource.restype = wintypes.DWORD
+    api.LoadResource.argtypes = (wintypes.HMODULE, wintypes.HRSRC)
+    api.LoadResource.restype = wintypes.HGLOBAL
+    api.LockResource.argtypes = (wintypes.HGLOBAL,)
+    api.LockResource.restype = ctypes.c_void_p
+    api.FreeLibrary.argtypes = (wintypes.HMODULE,)
+    api.FreeLibrary.restype = wintypes.BOOL
+
+    def read_resource(module, resource_type: int, resource_id: int) -> bytes | None:
+        # Integer resource IDs are MAKEINTRESOURCE pointers, not Unicode strings.
+        handle = api.FindResourceW(module, ctypes.c_void_p(resource_id), ctypes.c_void_p(resource_type))
+        if not handle:
+            return None
+        length = api.SizeofResource(module, handle)
+        resource = api.LoadResource(module, handle)
+        address = api.LockResource(resource) if resource else None
+        return ctypes.string_at(address, length) if address and length else None
+
+    windows_dir = Path(os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows")
+    paths = (windows_dir / "System32" / "imageres.dll",
+             windows_dir / "SystemResources" / "imageres.dll.mun")
+    for file in paths:
+        if not file.is_file():
+            continue
+        # Do not execute the DLL. Load it as resource-only data.
+        module = api.LoadLibraryExW(str(file), None, 0x00000002 | 0x00000020)
+        if not module:
+            continue
+        try:
+            group = read_resource(module, 14, 5205)  # RT_GROUP_ICON / ISO file icon
+            if not group or len(group) < 6:
+                continue
+            reserved, icon_type, count = struct.unpack_from("<HHH", group)
+            if reserved != 0 or icon_type != 1 or not 1 <= count <= 256 or len(group) < 6 + 14 * count:
+                continue
+            images = []
+            for idx in range(count):
+                width, height, colors, reserved_byte, planes, bit_depth, _, resource_id = \
+                    struct.unpack_from("<BBBBHHIH", group, 6 + 14 * idx)
+                image = read_resource(module, 3, resource_id)  # RT_ICON
+                if image:
+                    images.append((width, height, colors, reserved_byte, planes, bit_depth, image))
+            if not images:
+                continue
+
+            # Convert the Windows icon-group directory to a standard .ico file
+            # in memory, preserving all resolutions and PNG-compressed frames.
+            ico = bytearray(struct.pack("<HHH", 0, 1, len(images)))
+            offset = 6 + 16 * len(images)
+            for width, height, colors, reserved_byte, planes, bit_depth, image in images:
+                ico.extend(struct.pack("<BBBBHHII", width, height, colors, reserved_byte,
+                                       planes, bit_depth, len(image), offset))
+                offset += len(image)
+            for *_, image in images:
+                ico.extend(image)
+            return bytes(ico)
+        except (ValueError, struct.error, OSError):
+            # A Windows release may lack or move the resource; try the .mun file.
+            continue
+        finally:
+            api.FreeLibrary(module)
+    return None
+
+
+def _qicon_from_ico_bytes(data: bytes) -> QIcon:
+    """Build a multi-resolution QIcon from bytes without writing any ICO file."""
+    icon = QIcon()
+    if len(data) < 6:
+        return icon
+    _, _, count = struct.unpack_from("<HHH", data)
+    if not 1 <= count <= 256 or len(data) < 6 + count * 16:
+        return icon
+    for idx in range(count):
+        entry = data[6 + idx * 16:6 + (idx + 1) * 16]
+        length, offset = struct.unpack_from("<II", entry, 8)
+        if offset + length > len(data) or not length:
+            continue
+        # A single-image ICO gives Qt an explicit pixmap for each icon size.
+        single = struct.pack("<HHH", 0, 1, 1) + entry[:12] + struct.pack("<I", 22) + data[offset:offset + length]
+        pixmap = QPixmap()
+        if pixmap.loadFromData(single, "ICO"):
+            icon.addPixmap(pixmap)
+    return icon
+
+
+def _draw_fallback_iso_icon() -> QIcon:
+    """Draw a file-with-disc icon when Windows' imageres resource is unavailable.
+
+    This fallback is generated in memory. Neither a sidecar ICO file nor any
+    additional image package is required, and it works on any supported Qt OS.
+    """
+    result = QIcon()
+    for size in (16, 24, 32, 48, 64, 128, 256):
+        canvas = QPixmap(size, size)
+        canvas.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(canvas)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.scale(size / 256, size / 256)
+            # Folded document silhouette.
+            sheet = QPainterPath()
+            sheet.moveTo(45, 17)
+            sheet.lineTo(160, 17)
+            sheet.lineTo(211, 69)
+            sheet.lineTo(211, 239)
+            sheet.lineTo(45, 239)
+            sheet.closeSubpath()
+            painter.setPen(QPen(QColor("#8b9195"), 4))
+            painter.setBrush(QColor("#fafbfc"))
+            painter.drawPath(sheet)
+            painter.setPen(QPen(QColor("#8b9195"), 3))
+            painter.drawLine(QPointF(160, 18), QPointF(160, 69))
+            painter.drawLine(QPointF(160, 69), QPointF(211, 69))
+
+            # Optical disc, recognizable even at the smaller icon sizes.
+            disc = QRadialGradient(111, 132, 83)
+            disc.setColorAt(0, QColor("#ffffff"))
+            disc.setColorAt(0.45, QColor("#d7e1e4"))
+            disc.setColorAt(0.77, QColor("#aab6bb"))
+            disc.setColorAt(1, QColor("#eff2f2"))
+            painter.setBrush(disc)
+            painter.setPen(QPen(QColor("#b6c3c5"), 1.5))
+            painter.drawEllipse(QPointF(128, 147), 61, 61)
+            painter.setBrush(QColor("#f4f6f6"))
+            painter.setPen(QPen(QColor("#b5c1c6"), 2))
+            painter.drawEllipse(QPointF(128, 147), 19, 19)
+            painter.setBrush(QColor("#dfe6e8"))
+            painter.setPen(QPen(QColor("#bcc5c8"), 1.5))
+            painter.drawEllipse(QPointF(128, 147), 7, 7)
+        finally:
+            painter.end()
+        result.addPixmap(canvas)
+    return result
+
+
 # --------------------------- GUI ------------------------------------
 
 # Compact dark palette and field sizing match the Byte Wrapper conventions.
@@ -830,21 +993,25 @@ class ISOApp(QMainWindow):
 
     @staticmethod
     def _load_app_icon() -> QIcon:
-        """Load the user's ICO for source runs and bundled PyInstaller builds."""
-        # PyInstaller --onefile extracts --add-data resources to sys._MEIPASS.
-        # For normal Python runs, keep ISOWorkshop.ico beside this script.
-        base_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
-        icon_path = base_dir / "ISOWorkshop.ico"
-        if not icon_path.is_file():
-            raise FileNotFoundError(
-                f"Application icon not found: {icon_path}. "
-                "Place ISOWorkshop.ico next to ISO Workshop.py, or bundle it "
-                'with PyInstaller using --add-data "ISOWorkshop.ico;.".'
-            )
-        icon = QIcon(str(icon_path))
-        if icon.isNull():
-            raise RuntimeError(f"Could not load application icon: {icon_path}")
-        return icon
+        """Use Windows' ISO document icon with a safe, file-like fallback."""
+        try:
+            image_bytes = _extract_windows_iso_icon()
+            if image_bytes:
+                icon = _qicon_from_ico_bytes(image_bytes)
+                if not icon.isNull():
+                    return icon
+        except Exception:
+            # Missing DLL, missing resource, denied access, or malformed image
+            # must never prevent the main window from opening.
+            pass
+        try:
+            icon = _draw_fallback_iso_icon()
+            if not icon.isNull():
+                return icon
+        except Exception:
+            pass
+        # Final fallback uses Qt's stock document icon, not an optical drive.
+        return QApplication.instance().style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
 
     @staticmethod
     def _page() -> tuple[QWidget, QVBoxLayout]:
@@ -1302,4 +1469,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) == 3 and sys.argv[1] == "--export-icon":
+        # Optional build-time export for PyInstaller's Windows EXE icon.
+        # Running the GUI never creates or requires an external ICO file.
+        data = _extract_windows_iso_icon()
+        if not data:
+            sys.exit("Windows ISO icon (imageres.dll, resource 5205) could not be found.")
+        Path(sys.argv[2]).write_bytes(data)
+        print(f"Windows ISO icon exported to: {sys.argv[2]}")
+    else:
+        main()
