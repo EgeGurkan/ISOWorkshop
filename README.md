@@ -74,7 +74,7 @@ After a successful extraction, **Open Folder** opens the extracted directory.
 
 ## Status and error behavior
 
-Operations run in a background worker, leaving the interface responsive. Progress and concise English status messages are displayed inside the form. **Successful operations no longer open a redundant completion popup.** Errors and overwrite confirmations remain visible so failed operations are not silently ignored.
+Operations run in a background worker, leaving the interface responsive. Progress and concise English status messages are displayed inside the form. **Successful operations open a redundant completion popup.** Errors and overwrite confirmations remain visible so failed operations are not silently ignored.
 
 ## Build a Windows executable (optional)
 
