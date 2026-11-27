@@ -2,8 +2,6 @@
 
 A compact, dark-themed Windows ISO utility built with Python and PySide6.
 
-Repository: [https://github.com/EgeGurkan/ISOWorkshop](https://github.com/EgeGurkan/ISOWorkshop)
-
 <img width="380" height="132" alt="1" src="https://github.com/user-attachments/assets/21c99d89-d286-4887-ba79-8d857205dffd" />
 
 ## Requirements
